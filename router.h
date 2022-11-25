@@ -10,10 +10,27 @@
 #define TYPE_DATA 0x01
 #define TYPE_CONTROL 0x02
 
-#define TRIGGER_DV_SEND 0
-#define RELEASE_NAT_ITEM 1
-#define PORT_VALUE_CHANGE 2
-#define ADD_HOST 3
+#define TRIGGER_DV_SEND 0x0
+#define RELEASE_NAT_ITEM 0x1
+#define PORT_VALUE_CHANGE 0x2
+#define ADD_HOST 0x3
+
+struct Header {
+    uint32_t src;
+    uint32_t dst;
+    uint8_t type;
+    uint16_t length;
+};
+
+struct Dis_Next {
+    int32_t distance;
+    int32_t next;
+};
+
+struct dv_entry {
+    uint32_t ip;
+    int32_t distance;
+};
 
 class Router : public RouterBase {
 private:
@@ -50,21 +67,4 @@ public:
     void nat_release(uint32_t in_ip);
     int port_change(int port, int value, char* packet);
     int add_host(int port, uint32_t ip, char* packet);
-};
-
-struct Header {
-    uint32_t src;
-    uint32_t dst;
-    uint8_t type;
-    uint16_t length;
-};
-
-struct Dis_Next {
-    int32_t distance;
-    int32_t next;
-};
-
-struct dv_entry {
-    uint32_t ip;
-    int32_t distance;
 };

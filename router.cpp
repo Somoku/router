@@ -33,7 +33,7 @@ void Router::create_packet(Header header, char* payload, char* packet){
 }
 
 bool Router::is_external(uint32_t dst){
-    if(dst & this->external_mask == this->external_addr)
+    if(dst & (this->external_mask) == this->external_addr)
         return true;
     return false;
 }
@@ -61,8 +61,11 @@ uint32_t* Router::nat_pub2in(uint32_t pub){
     if(!pub_use[pub & ~(this->available_mask)])
         return nullptr;
     for(auto& entry : this->NAT_table){
-        if(entry.second == pub)
-            return &(entry.first);
+        if(entry.second == pub){
+            uint32_t* ret = new uint32_t;
+            *ret = entry.first;
+            return ret;
+        }
     }
     return nullptr;
 }
@@ -80,6 +83,7 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
         Header new_header{htonl(*dst_in), header.dst, header.type, header.length};
         create_packet(new_header, payload, packet);
         dst = *dst_in;
+        free(dst_in);
     }
     
     // 如果dst为外网ip，并且存在连接该外网的端口（distance = 0），则要对src进行地址转换
@@ -138,11 +142,12 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
             }
         }
     }
+    delete[] dv_payload;
     return broadcast;
 }
 
 void Router::dv_packet(char* packet){
-    int dv_num{DV_table.size()};
+    size_t dv_num{DV_table.size()};
     int i{0};
     dv_entry* dv_payload{new dv_entry[dv_num]};
     
@@ -152,7 +157,7 @@ void Router::dv_packet(char* packet){
         i++;
     }
     assert(i == dv_num);
-    Header header{0, 0, TYPE_DV, dv_num * sizeof(dv_entry)};
+    Header header{0, 0, TYPE_DV, (uint16_t)(dv_num * sizeof(dv_entry))};
     create_packet(header, (char*)dv_payload, packet);
     delete[] dv_payload;
     return;
@@ -168,6 +173,7 @@ void Router::nat_release(uint32_t in_ip){
 
 int Router::port_change(int port, int value, char* packet){
     assert(value > 0 || value == -1);
+
     if(port > this->port_num || port <= 1){
         fprintf(stderr, "Error: Invalid port number.\n");
         return -1;
@@ -176,7 +182,6 @@ int Router::port_change(int port, int value, char* packet){
     if(this->w[port] != value){
         int old_value = this->w[port];
         this->w[port] = value;
-        
         // Update DV_table.
         for(auto& entry : DV_table){
             if(entry.second.next == port){
@@ -207,13 +212,19 @@ int Router::add_host(int port, uint32_t ip, char* packet){
 
 int Router::control_handler(int in_port, Header header, char* payload, char* packet){
     int ctrl_type = atoi(strtok(payload, " "));
+    char* internal_ip, *token;
+    uint32_t in_ip, ip;
+    int port, value;
+
     switch(ctrl_type){
-        case TRIGGER_DV_SEND:
+        case TRIGGER_DV_SEND: {
             dv_packet(packet);
             return 0;
-        case RELEASE_NAT_ITEM:
-            uint32_t in_ip = 0;
-            char* internal_ip = strtok(NULL, " ");
+        }
+        break;
+        case RELEASE_NAT_ITEM: {
+            in_ip = 0;
+            internal_ip = strtok(NULL, " ");
             if(!internal_ip){
                 fprintf(stderr, "Error: Invalid internal_ip.\n");
                 return -1;
@@ -224,10 +235,9 @@ int Router::control_handler(int in_port, Header header, char* payload, char* pac
             }
             nat_release(ntohl(in_ip));
             return -1;
-        case PORT_VALUE_CHANGE:
-            char* token;
-            int port, value;
-            
+        }
+        break;
+        case PORT_VALUE_CHANGE: {
             // Get port.
             token = strtok(NULL, " ");
             if(!token){
@@ -248,11 +258,9 @@ int Router::control_handler(int in_port, Header header, char* payload, char* pac
 
             // Execute command.
             return port_change(port, value, packet);
-        case ADD_HOST:
-            char* token;
-            int port;
-            uint32_t ip;
-
+        }
+        break;
+        case ADD_HOST: {
             // Get port.
             token = strtok(NULL, " ");
             if(!token){
@@ -275,6 +283,8 @@ int Router::control_handler(int in_port, Header header, char* payload, char* pac
             
             // Execute command.
             return add_host(port, ntohl(ip), packet);
+        }
+        break;
         default:
             fprintf(stderr, "Error: Invalid controller command.\n");
     }
@@ -285,10 +295,8 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     assert(port_num > 0);
 
     this->port_num = port_num;
-    for(int i = 0; i <= port_num; i++)
-        this->w.push_back(-1);
+    this->w.resize(port_num + 1, -1);
     this->w[1] = 0;
-    this->pub_use.resize(1<<(32 - available_mask_bit), false);
     this->external_port = external_port;
     this->pub_pos = 0;
     if(external_port == 0){
@@ -296,8 +304,11 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
         this->available_addr = 0;
         this->available_mask_bit = 0;
         this->external_mask_bit = 0;
+        this->external_mask = 0;
+        this->available_mask = 0;
         return;
     }
+
     // Split CIDR external_addr into ip + mask
     char* token;
     uint32_t external_ip, available_ip;
@@ -311,8 +322,13 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
         return;
     }
     this->external_addr = ntohl(external_ip);
-    this->external_mask_bit = atoi(strtok(NULL, "/"));
-    this->external_mask = ((1<<external_mask_bit) - 1) << (32 - external_mask_bit);
+    token = strtok(NULL, "/");
+    if(!token){
+        fprintf(stderr, "Error: Invalid mask bit.\n");
+        return;
+    }
+    this->external_mask_bit = atoi(token);
+    this->external_mask = ((1 << (this->external_mask_bit)) - 1) << (32 - (this->external_mask_bit));
     this->external_addr &= this->external_mask;
 
     // Split CIDR available_addr into ip + mask
@@ -327,28 +343,34 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     }
     this->available_addr = ntohl(available_ip);
     this->available_mask_bit = atoi(strtok(NULL, "/"));
-    this->available_mask = ((1<<available_mask_bit) - 1) << (32 - available_mask_bit);
+    this->available_mask = ((1 << (this->available_mask_bit)) - 1) << (32 - (this->available_mask_bit));
     this->available_addr &= this->available_mask;
+    this->pub_use.resize(1 << (32 - (this->available_mask_bit)), false);
     return;
 }
 
 int Router::router(int in_port, char* packet) {
     // Analyze received packet.
     Header header;
+    int ret = -1;
     memcpy(&header, packet, HEADER_SIZE);
-    char* payload{new char[header.length]}; //TODO: free payload.
+    char* payload{new char[header.length]};
     memcpy(payload, packet + HEADER_SIZE, header.length);
 
     // Handle different types.
     switch(header.type){
         case TYPE_DV:
-            return dv_handler(in_port, header, payload, packet);
+            ret = dv_handler(in_port, header, payload, packet);
+            break;
         case TYPE_DATA:
-            return data_handler(in_port, header, payload, packet);
+            ret = data_handler(in_port, header, payload, packet);
+            break;
         case TYPE_CONTROL:
-            return control_handler(in_port, header, payload, packet);
+            ret = control_handler(in_port, header, payload, packet);
+            break;
         default:
             fprintf(stderr, "Error: Invalid type.\n");
     }
-    return -1;
+    free(payload);
+    return ret;
 }
