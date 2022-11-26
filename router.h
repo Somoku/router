@@ -63,7 +63,7 @@ public:
     uint32_t* nat_pub2in(uint32_t pub);
     bool is_external(uint32_t dst);
     void create_packet(Header header, char* payload, char* packet);
-    void dv_packet(char* packet);
+    void dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table);
     void nat_release(uint32_t in_ip);
     int port_change(int port, int value, Header header, char* packet);
     int add_host(int port, uint32_t ip, Header header, char* packet);

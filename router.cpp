@@ -8,7 +8,7 @@
 #include <assert.h>
 #include "router.h"
 
-#define _DEBUG
+//#define _DEBUG
 
 //TODO: external port
 //TODO: Clear all invalid entries in DV_table.
@@ -164,7 +164,8 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
     printf("dv_handler(): --- DV_table end ---\n");
 #endif
     // Update DV_table.
-    int broadcast = -1; // 0 = propagate, -1 = abort
+    int broadcast = -1; // 0 = propagate, -1 = abort, others = specific one
+    std::map<uint32_t, Dis_Next> sub_dv_table; // Entries to be propagated.
 
     for(int i = 0; i < entry_num; i++){
         uint32_t ip = dv_payload[i].ip;
@@ -174,6 +175,10 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
         if(this->DV_table.find(ip) == this->DV_table.end()){
             if(distance != -1){
                 this->DV_table[ip] = Dis_Next{distance + this->w[in_port], in_port};
+                if(sub_dv_table.find(ip) == sub_dv_table.end())
+                    sub_dv_table.insert({ip, this->DV_table[ip]});
+                else
+                    sub_dv_table[ip] = this->DV_table[ip];
 #ifdef _DEBUG
                 printf("dv_handler(): Add a new entry.\n");
                 std::cout<<"IP = "<<std::hex<<ip<<std::dec<<", Distance = "<<this->DV_table[ip].distance<<", Next = "<<this->DV_table[ip].next<<std::endl;
@@ -189,6 +194,10 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
                     std::cout<<"Old entry: IP = "<<std::hex<<ip<<std::dec<<", Distance = "<<this->DV_table[ip].distance<<", Next = "<<this->DV_table[ip].next<<std::endl;
 #endif                    
                     this->DV_table[ip] = Dis_Next{distance + this->w[in_port], in_port};
+                    if(sub_dv_table.find(ip) == sub_dv_table.end())
+                        sub_dv_table.insert({ip, this->DV_table[ip]});
+                    else
+                        sub_dv_table[ip] = this->DV_table[ip];
 #ifdef _DEBUG
                     printf("dv_handler(): Update an entry.\n");
                     std::cout<<"New entry: IP = "<<std::hex<<ip<<std::dec<<", Distance = "<<this->DV_table[ip].distance<<", Next = "<<this->DV_table[ip].next<<std::endl;
@@ -196,11 +205,16 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
                     broadcast = 0;
                 }
                 else if(this->DV_table[ip].distance != -1 && this->DV_table[ip].distance + this->w[in_port] < distance)
-                    broadcast = 0;
+                    broadcast = in_port;
             }
             else if(this->DV_table[ip].distance != -1){
                 if(this->DV_table[ip].next == in_port)
                     this->DV_table[ip].distance = -1;
+
+                if(sub_dv_table.find(ip) == sub_dv_table.end())
+                    sub_dv_table.insert({ip, this->DV_table[ip]});
+                else
+                    sub_dv_table[ip] = this->DV_table[ip];
                 broadcast = 0;
             }
         }
@@ -213,26 +227,33 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
     printf("dv_handler(): --- new DV_table end ---\n");
 #endif
     // Send updated DV table.
-    if(broadcast == 0){
+    if(broadcast == 0 && sub_dv_table.size() != 0){
 #ifdef _DEBUG
-    printf("dv_handler(): propagating\n");
+        printf("dv_handler(): propagating %d\n", broadcast);
 #endif
         memset(packet, 0, HEADER_SIZE + header.length);
-        dv_packet(packet);
+        dv_packet(packet, sub_dv_table);
+    }
+    else if(broadcast != 0 && this->DV_table.size() != 0){
+#ifdef _DEBUG
+        printf("dv_handler(): propagating %d\n", broadcast);
+#endif
+        memset(packet, 0, HEADER_SIZE + header.length);
+        dv_packet(packet, this->DV_table);
     }
 
     delete[] dv_payload;
     return broadcast;
 }
 
-void Router::dv_packet(char* packet){
-    size_t dv_num{this->DV_table.size()};
+void Router::dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table){
+    size_t dv_num{dv_table.size()};
     int i{0};
     dv_entry* dv_payload{new dv_entry[dv_num]};
 #ifdef _DEBUG
     printf("dv_packet(): dv_num = %ld\n", dv_num);
 #endif
-    for(auto& entry : this->DV_table){
+    for(auto& entry : dv_table){
         dv_payload[i].ip = entry.first;
         dv_payload[i].distance = entry.second.distance;
         i++;
@@ -271,17 +292,29 @@ int Router::port_change(int port, int value, Header header, char* packet){
         this->w[port] = value;
 
         int propagate = -1;
+        std::map<uint32_t, Dis_Next> sub_dv_table;
+
         // Update DV_table.
         for(auto& entry : this->DV_table){
             if(entry.second.next == port){
                 // Delete an edge.
                 if(value == -1){
                     entry.second.distance = -1;
+
+                    if(sub_dv_table.find(entry.first) == sub_dv_table.end())
+                        sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
+                    else
+                        sub_dv_table[entry.first] = this->DV_table[entry.first];
                     propagate = 0;
                 }
                 // Change edge weight.
                 else if(old_value != -1){
                     entry.second.distance -= (old_value - value);
+
+                    if(sub_dv_table.find(entry.first) == sub_dv_table.end())
+                        sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
+                    else
+                        sub_dv_table[entry.first] = this->DV_table[entry.first];
                     propagate = 0;
                 }
             }
@@ -292,8 +325,10 @@ int Router::port_change(int port, int value, Header header, char* packet){
             std::cout<<"IP = "<< std::hex <<entry.first<< std::dec <<", "<<"Distance = "<<entry.second.distance <<", Next = "<<entry.second.next<<std::endl;
         printf("port_change(): --- DV_table end ---\n");
 #endif
-        memset(packet, 0, HEADER_SIZE + header.length);
-        dv_packet(packet);
+        if(propagate == 0){
+            memset(packet, 0, HEADER_SIZE + header.length);
+            dv_packet(packet, sub_dv_table);
+        }
         
         // Erase all invalid edges.
         for(auto& entry: this->DV_table){
@@ -306,12 +341,13 @@ int Router::port_change(int port, int value, Header header, char* packet){
             std::cout<<"IP = "<<std::hex<<entry.first<<std::dec<<", "<<"Distance = "<<entry.second.distance <<", Next = "<<entry.second.next<<std::endl;
         printf("port_change(): --- erased DV_table end ---\n");
 #endif
-        return 0;
+        return propagate;
     }
     return -1;
 }
 
 int Router::add_host(int port, uint32_t ip, Header header, char* packet){
+    std::map<uint32_t, Dis_Next> sub_dv_table;
     if(port > this->port_num){
         fprintf(stderr, "Error: Invalid port number.\n");
         return -1;
@@ -321,7 +357,12 @@ int Router::add_host(int port, uint32_t ip, Header header, char* packet){
     printf("add_host(): ip = %x\n", ip);
 #endif
     this->w[port] = 0;
-    DV_table[ip] = Dis_Next{0, port};
+    this->DV_table[ip] = Dis_Next{0, port};
+
+    if(sub_dv_table.find(ip) == sub_dv_table.end())
+        sub_dv_table.insert({ip, this->DV_table[ip]});
+    else
+        sub_dv_table[ip] = this->DV_table[ip];
 #ifdef _DEBUG
     printf("dv_handler(): --- DV_table begin ---\n");
     for(auto& entry : this->DV_table){
@@ -330,7 +371,7 @@ int Router::add_host(int port, uint32_t ip, Header header, char* packet){
     printf("dv_handler(): --- DV_table end ---\n");
 #endif
     memset(packet, 0, HEADER_SIZE + header.length);
-    dv_packet(packet);
+    dv_packet(packet, sub_dv_table);
     return 0;
 }
 
@@ -357,7 +398,7 @@ int Router::control_handler(int in_port, Header header, char* payload, char* pac
             printf("control_handler(): TRIGGER_DV_SEND.\n");
 #endif
             memset(packet, 0, HEADER_SIZE + header.length);
-            dv_packet(packet);
+            dv_packet(packet, this->DV_table);
             return 0;
         }
         break;
