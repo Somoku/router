@@ -65,6 +65,6 @@ public:
     void create_packet(Header header, char* payload, char* packet);
     void dv_packet(char* packet);
     void nat_release(uint32_t in_ip);
-    int port_change(int port, int value, char* packet);
-    int add_host(int port, uint32_t ip, char* packet);
+    int port_change(int port, int value, Header header, char* packet);
+    int add_host(int port, uint32_t ip, Header header, char* packet);
 };
