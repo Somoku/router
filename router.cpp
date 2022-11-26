@@ -8,10 +8,9 @@
 #include <assert.h>
 #include "router.h"
 
-//#define _DEBUG
+// #define _DEBUG
 
 //TODO: external port
-//TODO: Clear all invalid entries in DV_table.
 
 RouterBase* create_router_object() {
     return new Router;
@@ -52,16 +51,31 @@ bool Router::is_external(uint32_t dst){
 }
 
 uint32_t* Router::nat_in2pub(uint32_t in){
-    if(this->NAT_table.find(in) != this->NAT_table.end())
+#ifdef _DEBUG
+    printf("nat_in2pub(): in = %x\n", in);
+    printf("nat_in2pub(): --- NAT_table begin ---\n");
+    for(auto& entry : this->NAT_table){
+        printf("in_IP = %x, pub_IP = %x\n", entry.first, entry.second);
+    }
+    printf("nat_in2pub(): --- NAT_table end ---\n");
+#endif
+    if(this->NAT_table.find(in) != this->NAT_table.end()){
+#ifdef _DEBUG
+        printf("nat_in2pub(): public address = %x\n", this->NAT_table[in]);
+#endif
         return &(this->NAT_table[in]);
+    }
     else{
         size_t pub_size = pub_use.size();
         for(int i = 0; i < pub_size; i++){
             int idx = (pub_pos + i) % pub_size;
             if(!pub_use[idx]){
                 pub_use[idx] = true;
-                uint32_t pub_ip = available_addr & idx;
+                uint32_t pub_ip = available_addr | idx;
                 this->NAT_table.insert({in, pub_ip});
+#ifdef _DEBUG
+                printf("nat_in2pub(): allocate new public address = %x, idx = %d\n", pub_ip, idx);
+#endif
                 pub_pos = (idx + 1) % pub_size;
                 return &(this->NAT_table[in]);
             }
@@ -71,7 +85,11 @@ uint32_t* Router::nat_in2pub(uint32_t in){
 }
 
 uint32_t* Router::nat_pub2in(uint32_t pub){
-    if(!pub_use[pub & ~(this->available_mask)])
+#ifdef _DEBUG
+    printf("nat_pub2in(): pub = %x, idx = %d\n", pub, pub & ~(this->available_mask));
+#endif
+    int idx = pub & (~(this->available_mask));
+    if(!pub_use[idx])
         return nullptr;
     for(auto& entry : this->NAT_table){
         if(entry.second == pub){
@@ -115,10 +133,13 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
     }
     
     // 如果dst为外网ip，并且存在连接该外网的端口（distance = 0），则要对src进行地址转换
-    Dis_Next* dn = dv_search(dst);
+    Dis_Next* dn = dv_search(is_external(dst) ? this->external_addr : dst);
     if(!dn)
         return 1;
     if(dn->distance == 0 && is_external(dst)){
+#ifdef _DEBUG
+        printf("data_handler(): dst is external ip\n");
+#endif
         uint32_t* src_pub = nat_in2pub(src);
 
         // If no public address available, abort the packet.
@@ -204,18 +225,40 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
 #endif                    
                     broadcast = 0;
                 }
-                else if(this->DV_table[ip].distance != -1 && this->DV_table[ip].distance + this->w[in_port] < distance)
-                    broadcast = in_port;
+                else if(this->DV_table[ip].distance != -1 && this->DV_table[ip].next != in_port && this->DV_table[ip].distance + this->w[in_port] < distance){
+                    if(sub_dv_table.find(ip) == sub_dv_table.end())
+                        sub_dv_table.insert({ip, this->DV_table[ip]});
+                    else
+                        sub_dv_table[ip] = this->DV_table[ip];
+
+                    if(broadcast == -1)
+                        broadcast = in_port;
+                    else if(broadcast > 0)
+                        broadcast = 0;
+                }
             }
             else if(this->DV_table[ip].distance != -1){
-                if(this->DV_table[ip].next == in_port)
+                if(this->DV_table[ip].next == in_port){
                     this->DV_table[ip].distance = -1;
 
-                if(sub_dv_table.find(ip) == sub_dv_table.end())
-                    sub_dv_table.insert({ip, this->DV_table[ip]});
-                else
-                    sub_dv_table[ip] = this->DV_table[ip];
-                broadcast = 0;
+                    if(sub_dv_table.find(ip) == sub_dv_table.end())
+                        sub_dv_table.insert({ip, this->DV_table[ip]});
+                    else
+                        sub_dv_table[ip] = this->DV_table[ip];
+
+                    broadcast = 0;
+                }
+                else{
+                    if(sub_dv_table.find(ip) == sub_dv_table.end())
+                        sub_dv_table.insert({ip, this->DV_table[ip]});
+                    else
+                        sub_dv_table[ip] = this->DV_table[ip];
+
+                    if(broadcast == -1)
+                        broadcast = in_port;
+                    else if(broadcast > 0)
+                        broadcast = 0;
+                }
             }
         }
     }
@@ -227,19 +270,12 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
     printf("dv_handler(): --- new DV_table end ---\n");
 #endif
     // Send updated DV table.
-    if(broadcast == 0 && sub_dv_table.size() != 0){
+    if(sub_dv_table.size() != 0){
 #ifdef _DEBUG
         printf("dv_handler(): propagating %d\n", broadcast);
 #endif
         memset(packet, 0, HEADER_SIZE + header.length);
         dv_packet(packet, sub_dv_table);
-    }
-    else if(broadcast != 0 && this->DV_table.size() != 0){
-#ifdef _DEBUG
-        printf("dv_handler(): propagating %d\n", broadcast);
-#endif
-        memset(packet, 0, HEADER_SIZE + header.length);
-        dv_packet(packet, this->DV_table);
     }
 
     delete[] dv_payload;
@@ -291,8 +327,8 @@ int Router::port_change(int port, int value, Header header, char* packet){
         int old_value = this->w[port];
         this->w[port] = value;
 
-        int propagate = -1;
-        std::map<uint32_t, Dis_Next> sub_dv_table;
+        //int propagate = -1;
+        //std::map<uint32_t, Dis_Next> sub_dv_table;
 
         // Update DV_table.
         for(auto& entry : this->DV_table){
@@ -301,21 +337,21 @@ int Router::port_change(int port, int value, Header header, char* packet){
                 if(value == -1){
                     entry.second.distance = -1;
 
-                    if(sub_dv_table.find(entry.first) == sub_dv_table.end())
-                        sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
-                    else
-                        sub_dv_table[entry.first] = this->DV_table[entry.first];
-                    propagate = 0;
+                    // if(sub_dv_table.find(entry.first) == sub_dv_table.end())
+                    //     sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
+                    // else
+                    //     sub_dv_table[entry.first] = this->DV_table[entry.first];
+                    // propagate = 0;
                 }
                 // Change edge weight.
                 else if(old_value != -1){
                     entry.second.distance -= (old_value - value);
 
-                    if(sub_dv_table.find(entry.first) == sub_dv_table.end())
-                        sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
-                    else
-                        sub_dv_table[entry.first] = this->DV_table[entry.first];
-                    propagate = 0;
+                    // if(sub_dv_table.find(entry.first) == sub_dv_table.end())
+                    //     sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
+                    // else
+                    //     sub_dv_table[entry.first] = this->DV_table[entry.first];
+                    // propagate = 0;
                 }
             }
         }
@@ -325,29 +361,33 @@ int Router::port_change(int port, int value, Header header, char* packet){
             std::cout<<"IP = "<< std::hex <<entry.first<< std::dec <<", "<<"Distance = "<<entry.second.distance <<", Next = "<<entry.second.next<<std::endl;
         printf("port_change(): --- DV_table end ---\n");
 #endif
+        /*
         if(propagate == 0){
             memset(packet, 0, HEADER_SIZE + header.length);
             dv_packet(packet, sub_dv_table);
         }
+        */
         
         // Erase all invalid edges.
+        /*
         for(auto& entry: this->DV_table){
             if(entry.second.distance == -1)
                 this->DV_table.erase(entry.first);
         }
+        */
 #ifdef _DEBUG
         printf("port_change(): --- erased DV_table begin ---\n");
         for(auto& entry : this->DV_table)
             std::cout<<"IP = "<<std::hex<<entry.first<<std::dec<<", "<<"Distance = "<<entry.second.distance <<", Next = "<<entry.second.next<<std::endl;
         printf("port_change(): --- erased DV_table end ---\n");
 #endif
-        return propagate;
+        //return propagate;
     }
     return -1;
 }
 
 int Router::add_host(int port, uint32_t ip, Header header, char* packet){
-    std::map<uint32_t, Dis_Next> sub_dv_table;
+    // std::map<uint32_t, Dis_Next> sub_dv_table;
     if(port > this->port_num){
         fprintf(stderr, "Error: Invalid port number.\n");
         return -1;
@@ -359,10 +399,10 @@ int Router::add_host(int port, uint32_t ip, Header header, char* packet){
     this->w[port] = 0;
     this->DV_table[ip] = Dis_Next{0, port};
 
-    if(sub_dv_table.find(ip) == sub_dv_table.end())
-        sub_dv_table.insert({ip, this->DV_table[ip]});
-    else
-        sub_dv_table[ip] = this->DV_table[ip];
+    // if(sub_dv_table.find(ip) == sub_dv_table.end())
+    //     sub_dv_table.insert({ip, this->DV_table[ip]});
+    // else
+    //     sub_dv_table[ip] = this->DV_table[ip];
 #ifdef _DEBUG
     printf("dv_handler(): --- DV_table begin ---\n");
     for(auto& entry : this->DV_table){
@@ -370,9 +410,9 @@ int Router::add_host(int port, uint32_t ip, Header header, char* packet){
     }
     printf("dv_handler(): --- DV_table end ---\n");
 #endif
-    memset(packet, 0, HEADER_SIZE + header.length);
-    dv_packet(packet, sub_dv_table);
-    return 0;
+    // memset(packet, 0, HEADER_SIZE + header.length);
+    // dv_packet(packet, sub_dv_table);
+    return -1;
 }
 
 int Router::control_handler(int in_port, Header header, char* payload, char* packet){
@@ -537,6 +577,7 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     this->external_mask_bit = atoi(token);
     this->external_mask = ((1 << (this->external_mask_bit)) - 1) << (32 - (this->external_mask_bit));
     this->external_addr &= this->external_mask;
+    this->DV_table.insert({this->external_addr, Dis_Next{0, this->external_port}});
 
     // Split CIDR available_addr into ip + mask
     token = strtok(available_addr, "/");
