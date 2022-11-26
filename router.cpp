@@ -123,7 +123,7 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
             fprintf(stderr, "Error: Invalid public address.\n");
             return -1;
         }
-        Header new_header{htonl(*dst_in), header.dst, header.type, header.length};
+        Header new_header{header.src, htonl(*dst_in), header.type, header.length};
         
         memset(packet, 0, HEADER_SIZE + header.length);
         create_packet(new_header, payload, packet);
@@ -578,6 +578,7 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     this->external_mask = ((1 << (this->external_mask_bit)) - 1) << (32 - (this->external_mask_bit));
     this->external_addr &= this->external_mask;
     this->DV_table.insert({this->external_addr, Dis_Next{0, this->external_port}});
+    this->w[this->external_port] = 0;
 
     // Split CIDR available_addr into ip + mask
     token = strtok(available_addr, "/");
