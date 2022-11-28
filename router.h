@@ -30,6 +30,7 @@ struct Dis_Next {
 struct dv_entry {
     uint32_t ip;
     int32_t distance;
+    int32_t next;
 };
 
 class Router : public RouterBase {
@@ -47,10 +48,13 @@ private:
     uint32_t available_mask_bit; // Mask number of available_addr
     uint32_t available_mask; // Mask of available_addr
     std::map<uint32_t, Dis_Next> DV_table; // DV table mapping from IP to distance.
+    std::map<uint32_t, Dis_Next> send_dv_table; // DV table to be sent.
     std::vector<int> w; // Weight array of every port.
     std::map<uint32_t, uint32_t> NAT_table; // NAT table mapping from internal address to public address.
     std::vector<bool> pub_use; // Record allocation of public address.
     int pub_pos; // Position of current unallocated public address.
+    bool update; // Whether DV table is updated.
+    int way_num; // Number of ways to send packet.
 
 public:
     void router_init(int port_num, int external_port, char* external_addr, char* available_addr);
