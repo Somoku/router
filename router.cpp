@@ -8,7 +8,7 @@
 #include <assert.h>
 #include "router.h"
 
-#define _DEBUG
+// #define _DEBUG
 
 //TODO: external port
 
@@ -16,21 +16,39 @@ RouterBase* create_router_object() {
     return new Router;
 }
 
-Dis_Next* Router::dv_search(uint32_t dst){
+Dis_Next Router::dv_search(uint32_t dst){
 #ifdef _DEBUG
     printf("dv_search(): dst = %x\n", dst);
 #endif
-    if(this->DV_table.find(dst) != this->DV_table.end()){
-        if(this->DV_table[dst].distance == -1)
-            return nullptr;
-        else{
+    Dis_Next dn = {-1, -1};
+    if(is_external(dst)){
+        uint32_t mask = 0xffffffff;
+        for(auto& entry : this->DV_table){
+            if((dst & entry.first) == entry.first){
+                if((entry.first ^ dst) < mask){
+                    dn.distance = entry.second.distance;
+                    dn.next = entry.second.next;
+                    mask = entry.first ^ dst;
+                }
+            }
+        }
+        return dn;
+    }
+    else{
+        if(this->DV_table.find(dst) != this->DV_table.end()){
+            if(this->DV_table[dst].distance == -1)
+                return dn;
+            else{
 #ifdef _DEBUG
-            printf("dv_search(): Distance = %d, Next = %d\n", this->DV_table[dst].distance, this->DV_table[dst].next);
+                printf("dv_search(): Distance = %d, Next = %d\n", this->DV_table[dst].distance, this->DV_table[dst].next);
 #endif
-            return &(this->DV_table[dst]);
+                dn.distance = this->DV_table[dst].distance;
+                dn.next = this->DV_table[dst].next;
+                return dn;
+            }
         }
     }
-    return nullptr;
+    return dn;
 }
 
 void Router::create_packet(Header header, char* payload, char* packet){
@@ -40,13 +58,26 @@ void Router::create_packet(Header header, char* payload, char* packet){
     memcpy(packet + HEADER_SIZE, payload, header.length);
 }
 
-bool Router::is_external(uint32_t dst){
+bool Router::is_self_external(uint32_t dst){
 #ifdef _DEBUG
-    printf("is_external(): dst = %x\n", dst);
-    printf("is_external(): external_addr = %x\n", this->external_addr);
+    printf("is_self_external(): dst = %x\n", dst);
+    printf("is_self_external(): external_addr = %x\n", this->external_addr);
 #endif
     if(this->external_port != 0 && ((dst & (this->external_mask)) == this->external_addr))
         return true;
+    return false;
+}
+
+bool Router::is_external(uint32_t dst){
+#ifdef _DEBUG
+    printf("is_external(): dst = %x\n", dst);
+#endif
+    if((dst & 0xff000000) != 0xa000000){
+#ifdef _DEBUG
+        printf("is_external(): is external.\n");
+#endif
+        return true;
+    }
     return false;
 }
 
@@ -109,7 +140,7 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
     printf("data_handler(): src = %x\n", src);
 #endif
     // 如果src为外网ip，则要对dst进行地址转换
-    if(is_external(src)){
+    if(is_self_external(src)){
 #ifdef _DEBUG
         printf("data_handler(): external packet.\n");
 #endif
@@ -123,20 +154,21 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
             fprintf(stderr, "Error: Invalid public address.\n");
             return -1;
         }
-        Header new_header{header.src, htonl(*dst_in), header.type, header.length};
+        dst = *dst_in;
+        free(dst_in);
+
+        Header new_header{header.src, htonl(dst), header.type, header.length};
         
         memset(packet, 0, HEADER_SIZE + header.length);
         create_packet(new_header, payload, packet);
-        
-        dst = *dst_in;
-        free(dst_in);
     }
     
     // 如果dst为外网ip，并且存在连接该外网的端口（distance = 0），则要对src进行地址转换
-    Dis_Next* dn = dv_search(is_external(dst) ? this->external_addr : dst);
-    if(!dn)
+    Dis_Next dn = dv_search(dst);
+    if(dn.distance == -1 && dn.next == -1)
         return 1;
-    if(dn->distance == 0 && is_external(dst)){
+
+    if(dn.distance == 0 && is_self_external(dst)){
 #ifdef _DEBUG
         printf("data_handler(): dst is external ip\n");
 #endif
@@ -151,10 +183,10 @@ int Router::data_handler(int in_port, Header header, char* payload, char* packet
         memset(packet, 0, HEADER_SIZE + header.length);
         create_packet(new_header, payload, packet);
         
-        return dn->next;
+        return dn.next;
     }
     else
-        return dn->next;
+        return dn.next;
 }
 
 int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
@@ -694,6 +726,7 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     printf("[Router] available_mask_bit = %u\n", this->available_mask_bit);
     printf("[Router] available_mask = %x\n", this->available_mask);
     printf("[Router] pub_pos = %d\n", this->pub_pos);
+    std::cout<<"[Router] send_dv_table size = " << (this->send_dv_table).size() <<std::endl;
     std::cout<<"[Router] DV_table size = " << (this->DV_table).size() <<std::endl;
     std::cout<<"[Router] w size = " << (this->w).size() <<std::endl;
     std::cout<<"[Router] NAT_table size = " << (this->NAT_table).size() <<std::endl;

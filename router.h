@@ -30,7 +30,6 @@ struct Dis_Next {
 struct dv_entry {
     uint32_t ip;
     int32_t distance;
-    int32_t next;
 };
 
 class Router : public RouterBase {
@@ -62,9 +61,10 @@ public:
     int data_handler(int in_port, Header header, char* payload, char* packet);
     int dv_handler(int in_port, Header header, char* payload, char* packet);
     int control_handler(int in_port, Header header, char* payload, char* packet);
-    Dis_Next* dv_search(uint32_t dst);
+    Dis_Next dv_search(uint32_t dst);
     uint32_t* nat_in2pub(uint32_t in);
     uint32_t* nat_pub2in(uint32_t pub);
+    bool is_self_external(uint32_t dst);
     bool is_external(uint32_t dst);
     void create_packet(Header header, char* payload, char* packet);
     void dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table);
