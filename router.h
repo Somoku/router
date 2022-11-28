@@ -47,10 +47,13 @@ private:
     uint32_t available_mask_bit; // Mask number of available_addr
     uint32_t available_mask; // Mask of available_addr
     std::map<uint32_t, Dis_Next> DV_table; // DV table mapping from IP to distance.
+    std::map<uint32_t, Dis_Next> send_dv_table; // DV table to be sent.
     std::vector<int> w; // Weight array of every port.
     std::map<uint32_t, uint32_t> NAT_table; // NAT table mapping from internal address to public address.
     std::vector<bool> pub_use; // Record allocation of public address.
     int pub_pos; // Position of current unallocated public address.
+    bool update; // Whether DV table is updated.
+    int way_num; // Number of ways to send packet.
 
 public:
     void router_init(int port_num, int external_port, char* external_addr, char* available_addr);
@@ -58,9 +61,10 @@ public:
     int data_handler(int in_port, Header header, char* payload, char* packet);
     int dv_handler(int in_port, Header header, char* payload, char* packet);
     int control_handler(int in_port, Header header, char* payload, char* packet);
-    Dis_Next* dv_search(uint32_t dst);
+    Dis_Next dv_search(uint32_t dst);
     uint32_t* nat_in2pub(uint32_t in);
     uint32_t* nat_pub2in(uint32_t pub);
+    bool is_self_external(uint32_t dst);
     bool is_external(uint32_t dst);
     void create_packet(Header header, char* payload, char* packet);
     void dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table);
