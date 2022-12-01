@@ -229,6 +229,8 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
     for(int i = 0; i < entry_num; i++){
         uint32_t ip = dv_payload[i].ip;
         int32_t distance = dv_payload[i].distance;
+        int next = dv_payload[i].next;
+        int opposite = dv_payload[i].opposite;
 
         // Add a new entry.
         if(this->DV_table.find(ip) == this->DV_table.end()){
@@ -258,12 +260,25 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
 #ifdef _DEBUG
                     std::cout<<"Old entry: IP = "<<std::hex<<ip<<std::dec<<", Distance = "<<this->DV_table[ip].distance<<", Next = "<<this->DV_table[ip].next<<std::endl;
 #endif                    
-                    this->DV_table[ip] = Dis_Next{distance + this->w[in_port], in_port};
+                    // if(this->port_table.find(opposite) == this->port_table.end()){
+#ifdef _DEBUG
+                        printf("dv_handler(): port_table exception.\n");
+                        printf("dv_handler(): opposite = %d\n", opposite);
+                        for(auto& tmp : this->port_table){
+                            printf("port = %d, op_port = %d\n", tmp.first, tmp.second);
+                        }
+#endif
+                    // }
+                    // if(this->port_table[opposite] != next){
+                    if(in_port != opposite || this->port_table[opposite] != next){
+                        this->DV_table[ip] = Dis_Next{distance + this->w[in_port], in_port};
 
-                    if(this->send_dv_table.find(ip) == this->send_dv_table.end())
-                        this->send_dv_table.insert({ip, this->DV_table[ip]});
-                    else
-                        this->send_dv_table[ip] = this->DV_table[ip];
+                        if(this->send_dv_table.find(ip) == this->send_dv_table.end())
+                            this->send_dv_table.insert({ip, this->DV_table[ip]});
+                        else
+                            this->send_dv_table[ip] = this->DV_table[ip];
+                        broadcast = 0;
+                    }
 
                     // if(sub_dv_table.find(ip) == sub_dv_table.end())
                     //     sub_dv_table.insert({ip, this->DV_table[ip]});
@@ -273,7 +288,6 @@ int Router::dv_handler(int in_port, Header header, char* payload, char* packet){
                     printf("dv_handler(): Update an entry.\n");
                     std::cout<<"New entry: IP = "<<std::hex<<ip<<std::dec<<", Distance = "<<this->DV_table[ip].distance<<", Next = "<<this->DV_table[ip].next<<std::endl;
 #endif                    
-                    broadcast = 0;
                 }
                 else if(this->DV_table[ip].distance != -1 && this->DV_table[ip].next == in_port){
                     this->DV_table[ip] = Dis_Next{distance + this->w[in_port], in_port};
@@ -382,6 +396,8 @@ void Router::dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table){
     for(auto& entry : dv_table){
         dv_payload[i].ip = entry.first;
         dv_payload[i].distance = entry.second.distance;
+        dv_payload[i].next = entry.second.next;
+        dv_payload[i].opposite = this->port_table.find(entry.second.next) == this->port_table.end() ? -1 : this->port_table[entry.second.next];
         i++;
     }
     assert(i == dv_num);
@@ -390,6 +406,27 @@ void Router::dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table){
     create_packet(header, (char*)dv_payload, packet);
     delete[] dv_payload;
     return;
+}
+
+void Router::port_packet(char* packet, int port){
+    int* i{new int};
+    *i = port;
+    Header header{0, 0, TYPE_PORT, sizeof(int)};
+    create_packet(header, (char*)i, packet);
+    delete i;
+    return;
+}
+
+int Router::port_handler(int in_port, Header header, char* payload, char* packet){
+    int op_port = *((int*)payload);
+#ifdef _DEBUG
+    printf("port_handler(): op_port = %d\n", op_port);
+#endif
+    if(this->port_table.find(in_port) == this->port_table.end())
+        this->port_table.insert({in_port, op_port});
+    else
+        this->port_table[in_port] = op_port;
+    return -1;
 }
 
 void Router::nat_release(uint32_t in_ip){
@@ -444,6 +481,7 @@ int Router::port_change(int port, int value, Header header, char* packet){
                     else
                         this->send_dv_table[entry.first] = this->DV_table[entry.first];
 
+                    this->port_table.erase(port);
                     // if(sub_dv_table.find(entry.first) == sub_dv_table.end())
                     //     sub_dv_table.insert({entry.first, this->DV_table[entry.first]});
                     // else
@@ -467,6 +505,13 @@ int Router::port_change(int port, int value, Header header, char* packet){
                 }
             }
         }
+
+        if(old_value == -1){
+            memset(packet, 0, HEADER_SIZE + header.length);
+            port_packet(packet, port);
+            return port;
+        }
+
 #ifdef _DEBUG
         printf("port_change(): --- DV_table begin ---\n");
         for(auto& entry : this->DV_table)
@@ -728,6 +773,7 @@ void Router::router_init(int port_num, int external_port, char* external_addr, c
     printf("[Router] pub_pos = %d\n", this->pub_pos);
     std::cout<<"[Router] send_dv_table size = " << (this->send_dv_table).size() <<std::endl;
     std::cout<<"[Router] DV_table size = " << (this->DV_table).size() <<std::endl;
+    std::cout<<"[Router] port_table size = " << (this->port_table).size() << std::endl;
     std::cout<<"[Router] w size = " << (this->w).size() <<std::endl;
     std::cout<<"[Router] NAT_table size = " << (this->NAT_table).size() <<std::endl;
     std::cout<<"[Router] pub_use size = " << (this->pub_use).size() << std::endl;
@@ -772,6 +818,12 @@ int Router::router(int in_port, char* packet) {
             printf("router(): received TYPE_CONTROL packet.\n");
 #endif
             ret = control_handler(in_port, header, payload, packet);
+            break;
+        case TYPE_PORT:
+#ifdef _DEBUG
+            printf("router(): received TYPE_PORT packet.\n");
+#endif
+            ret = port_handler(in_port, header, payload, packet);
             break;
         default:
             fprintf(stderr, "Error: Invalid type.\n");

@@ -9,6 +9,7 @@
 #define TYPE_DV 0x00
 #define TYPE_DATA 0x01
 #define TYPE_CONTROL 0x02
+#define TYPE_PORT 0x03
 
 #define TRIGGER_DV_SEND 0x0
 #define RELEASE_NAT_ITEM 0x1
@@ -30,6 +31,8 @@ struct Dis_Next {
 struct dv_entry {
     uint32_t ip;
     int32_t distance;
+    int next;
+    int opposite;
 };
 
 class Router : public RouterBase {
@@ -51,6 +54,7 @@ private:
     std::vector<int> w; // Weight array of every port.
     std::map<uint32_t, uint32_t> NAT_table; // NAT table mapping from internal address to public address.
     std::vector<bool> pub_use; // Record allocation of public address.
+    std::map<int, int> port_table; // k = router's port number; v = opposite port number
     int pub_pos; // Position of current unallocated public address.
     bool update; // Whether DV table is updated.
     int way_num; // Number of ways to send packet.
@@ -61,6 +65,7 @@ public:
     int data_handler(int in_port, Header header, char* payload, char* packet);
     int dv_handler(int in_port, Header header, char* payload, char* packet);
     int control_handler(int in_port, Header header, char* payload, char* packet);
+    int port_handler(int in_port, Header header, char* payload, char* packet);
     Dis_Next dv_search(uint32_t dst);
     uint32_t* nat_in2pub(uint32_t in);
     uint32_t* nat_pub2in(uint32_t pub);
@@ -68,6 +73,7 @@ public:
     bool is_external(uint32_t dst);
     void create_packet(Header header, char* payload, char* packet);
     void dv_packet(char* packet, std::map<uint32_t, Dis_Next> dv_table);
+    void port_packet(char* packet, int port);
     void nat_release(uint32_t in_ip);
     int port_change(int port, int value, Header header, char* packet);
     int add_host(int port, uint32_t ip, Header header, char* packet);
